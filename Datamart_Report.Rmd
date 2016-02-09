@@ -1,0 +1,474 @@
+---
+title: "MARKETING DATAMART - Manual"
+author: 'Group 6 : Rahul MAHESHWARI & DU Kang'
+fontsize: 12pt
+output:
+  pdf_document:
+    number_sections: yes
+    toc: yes
+  html_document:
+    mathjax: http://cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML
+    number_sections: yes
+    toc: yes
+always_allow_html: yes
+---
+**********
+```{r global_options, echo=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+```{r}
+library(data.table)
+library(readxl)
+library(ggplot2)
+
+#--Set some uniform global theme properties for ggplot.
+theme_set(theme_bw(12) + 
+          theme(panel.grid.major = element_line(colour = "grey50"),
+                panel.grid.minor = element_blank(),
+                axis.line = element_line(colour = "black")))
+
+#--Make sure that this temp csv version has been created first in the same folder by uncommenting and running the last line in the Datamart.R. Required only when running this report again.
+Datamart <- fread("Datamart_temp.csv")
+
+UserSegmentMatrix <- fread("UserSegmentMatrix.csv")
+
+#--Make sure the code.xlsx containing mapping of codes from the codebook is in the same folder. Required only when running this report again.
+CountryCodes <- as.data.table(read_excel("Codes.xlsx", sheet = "Country_Codes"))
+ProductCodes <- as.data.table(read_excel("Codes.xlsx", sheet = "Product_Codes"))
+LanguageCodes <- as.data.table(read_excel("Codes.xlsx", sheet = "Language_Codes"))
+```
+
+\pagebreak
+  
+##Approach
+
+The implementation has been done primarily using the `data.table` package along with a little use of `dplyr` package. `readxl` and `ggplot2` packages have been used to make this report manual. We started off with reading all the four csv files, and cleaning them. Only a couple of `Gender` values were missing which were assigned 0 (female). All the date columns were converted into R `Date` objects to allow calculations on dates. From the analytic dataset, only the `Age` column was taken since this information is not present in Demographics dataset. The first step was to combine the Poker transaction and User Agrregation datasets to facilitate a uniform analysis across all products. For this purpose, the poker transactions were aggregated per day after stripping off the time portion and the table was restructured to make it similar to the User Agrregation table. All the buy transactions per day were summed as stakes and the difference between buy and sell amounts per day were computed as the winnings for that day. The number of buy transactions per day were counted as the number of bets for that day, and a new column was added called `ProductID` with a constant value of 3. Then the poker table was combined with the User Aggregation table using `rbind`, and this combined table was joined with the Demographics table on `UserID`. As per the methodology in the codebook, only the users with registration date between 1 and 27 february, and transactions done after `FirstPay` date were retained. Total active days per product as well as overall, first and last active dates per product as well as overall were calculated in this table, along with the total stakes and winnings per product as aggregations of individual transactions amounts. This table was joined with the Age data on the `UserID` to create a Datacube. User segments were created and assigned based on the gender and age of the user. The segments were ranked based on the aggregated profits made over all the users in that segment and the rank was inserted back into the Datcube. The Datacube at this point had one row per user per product he/she played with all the information needed to create a Datamart. Global metrics were calculated from the Datacube and put in the new Datamart table. Product-wise metrics were calculated and put as individual columns in the Datamart instead of rows, such that each product has a dedicated column per product metric and each user has just one row in the Datamart. This Datamart table was then written into a CSV file with numerical figures formatted as euros or % as applicable, and all `NA` values replaced with 0s representing missing data. The User Segment matrix was written into a CSV file as well for reference. All the temporary tables were removed throughout the code to keep the memory footprint to a minimum.
+  
+  
+**********
+  
+\newpage
+  
+##Structure
+
+The Datamart consists of the following main columns :
+
+* **UserID** - _[From Demographics table]_ Unique identifier of the user assigned at the time of registration.
+
+* **Country** - _[From Demographics table]_ User's country of residence.
+
+* **Language** - _[From Demographics table]_ Primary language of the user.
+
+* **RegDate** - _[From Demographics table]_ Date of registration of the user in the mm/dd/yyyy format.
+
+* **FirstActDate_Overall** - _[From Transaction tables]_ User's first active play date.
+
+* **LastActDate_Overall** - _[From Transaction tables]_ User's last active play date.
+
+* **TotalActDays_Overall** - _[Calculated]_ User's total active days of play between the first and last active date.
+
+* **Ranked Segment** - _[Calculated]_ Profitability rank of the segment to which the user belongs. See _Metrics_ section for details.
+
+* **First Activity Lag (days)** - _[Calculated]_ Gap between the date of registration and first active play date of the user.
+
+* **Total Products Played** - _[Calculated]_ Count of the number of different types of products the user has played.
+
+* **Overall Playing Frequency** - _[Calculated]_ Ratio representing how much the user has been active in between his first and last active play date.
+
+* **Favorite Product** - _[Calculated]_ ID of the product which the user has played most frequently.
+
+* **Overall Stakes** - _[Calculated]_ Total stakes the user betted on across products. Also the total revenues for bWin from the user.
+
+* **Overall Winnings** - _[Calculated]_ Total winnings the user received on all products. Also the total cost of user for bwin.
+
+* **Overall Profit Margin** - _[Calculated]_ Total profit margin from the user for bwin.
+
+* **Lifetime Value (Indicative)** - _[Calculated]_ Descriptive approximate lifeime value of the user for bwin over his active play period.
+
+* **P(i) B/D Ratio** - _[Calculated]_ Bet to Deposits ratio of the user for a particular product. There are 8 columns for each of the 8 products. If the user has not played the product, the value for the column is 0.
+
+* **P(i) Profit Margin** - _[Calculated]_ Proft Margin from the user on a particular product. There are 8 columns for each of the 8 products. If the user has not played the product, the value for the column is 0.
+
+* **P(i) Playing Frequency** - _[Calculated]_ Ratio representing how much the user has been active on a particular product in between his first and last active play date for that particular product. There are 8 columns for each of the 8 products. If the user has not played the product, the value for the column is 0.
+
+   \*_Note - If a user has not played a particular product, it means there is no data for that user on that particular product and all the last three P(i) column have 0 in such cases_.
+
+
+**********
+  
+\newpage
+  
+##Metrics Description
+
+Two types of marketing metrics have been provided in the Datamart : _Global_ (per user across all products) and _Product_ (per user per product). This section describes their meaning and how they have been calculated in the order they appear in the Datamart :
+
+1. **Total active days overall** - This gives a general idea about the duration for which different users have been active on bwin over the period of study. This has been calculated as the count of unique dates in the Poker transaction and User aggregation tables combined.
+  
+2. **Ranked segment** - User segments have been created by a combination of gender and usual phases of life, and assigned to each user. The segments were ranked as per their profitability (Total Stakes - Total Winnings of all users under that segment) and the ranks were directly put in the Datamart. The User segment matrix csv should be referred to map the segments and their ranks. Grouping by profitable segments would allow the marketing to focus on and target each group of users in a customized way. The user segment matrix created is as follows : 
+
+User Segment    Profitability(euros)  Rank
+------------    ----------------      ----
+<=24 M                    2,703,482      3
+<=24 F                      301,999      6
+25-39 M                   5,548,491      1
+25-39 F                     328,047      5
+40-64 M                   2,205,701      4
+40-64 F                     160,852      7
+>=65 M                       47,671      9
+>= 65 F                      14,344     10
+Unknown_Age M             3,716,525      2
+Unknown_Age F                76,777      8
+  
+\*_M - Male, F - Female_.  
+\*_Unknown_Age - Age data not available from analytic dataset_.  
+  
+3. **First activity lag** - This is the lag each user exhibited in starting to play on bwin after they registered, and is essentially represents opportunity cost for bwin. The marketing should look at users with high lag and communicate with them to try make them play and turn profitable as soon as they have registered. This has been calculated as follows:
+
+        FirstActDate_Overall - RegDate
+
+4. **Total products played** - This gives a quick insight into the range of products each user played. More the number of different products tried, less skilled the user is in any one particular product potentially or not winning much in any particular product. This can be analyzed together with the profits made by the user in each of the products to find a possible correlation.  
+  
+5. **Overall playing frequency** - This metric indicates how much the user has actually been playing and winning or losing money. Higher the ratio, the more addicted the user is to online gambling and has better prospect of being a loyal customer. This has been calculated as follows:
+
+        TotalActDays_overall / (LastActDate_Overall - FirstActDate_Overall + 1)
+
+6. **Favorite product** - This indicates the product which the user has played the most, and represents a level of addiction of the user to the particular product. The marketing can customize offers and promotions related to the most favorite product for that user if the user is profitable for bwin in that particular product or try to incentivize to make the user try other products as well. This has been calculated as:
+  
+        P(i) with max(Playing Frequency of the user)
+
+7. **Overall stakes** - This represents the total revenue from each user during his/her entire duration of activity, and is calculated as:
+
+        Sum(Total Stakes on all P(i))
+
+8. **Overall winnings** - This repesents the total cost for bwin of maintaining each user, and is calculated as:
+
+        Sum(Total Winnings on all P(i))
+        
+   \*_Note - The overall cost of a user also includes administrative and logistics cost but that data is not available_.  
+
+9. **Overall profit margin** - This is the most direct indicator of how profitable a user has been so far for bwin. Postive margin indicates bwin is making money from the user whereas negative means bwin is losing money to the user. Lower margin indicates the cost to serve that user is high. The marketing can focus only on the most profitable users, and in conjunction with the other metrics, try to encourage users with low margin to play more. This has been calculated as:
+
+        [(Overall Stakes - Overall Winnings) / Overall Stakes] * 100
+
+   \*_Note - Users with zero stakes but non-zero winnings indicate they have used only the promotional money offered by bwin and won on that. In such cases margin is not possible to calculate and has been indicated as 0 in the datamart_.  
+   
+10. **Lifetime value (Indicative)** - This is a descriptive metric calculated using historical data on the user's activity on bwin and indicates the approximate cash flow bwin can expect from the user over each period of similar duration for which the user was active on bwin, if he/she were to continue playing. Marketing can project this cash flow into future, diminishing it over time based on some parameters, and apply the weighted average cost of capital and the retention probability (out of scope of the Datamart) to get the NPV of the user over the desired projected period. Only the users with postive lifetime are valuable and need to be focused on. Bwin can also try to devise strategy to extract additional value from lower valued user, based on the analysis on whether they are more loyal or cost less to serve. The metric has been calculated as follows:
+
+        [(Overall Stakes - Overall Winnings) / TotalActDays_Overall] 
+        * 
+        [LastActDate_Overall - FirstActDate_Overall + 1]
+
+11. **Product Bet / Deposit ratio** - This is a product metric and shows how many times the user circulate each euro/dollar/pound they have deposited. Higher ratio means that it takes more time to lose whilst lower value indicates that bwin is drying them at a faster pace. Deviation from the standard might also mean that the games don't function as they should (RNG problems, etc.), and there might be a need to check the software functionality. This metric can be aggregated over all the users to compare performance of the different products. As the name indicates, this has been calculated for each product as:
+
+        Total bets on P(i) / Total stakes on P(i)
+
+   \*_Note - Users with zero stakes but non-zero bets indicate they have placed bets only using the promotional money offered by bwin. In such cases the ratio is not possible to calculate and has been indicated as 0 in the datamart_.  
+
+12. **Product profit margin** - This is a prodcut metric and is similar to the overall profit margin, except that it is calculated for each product. This metric indicates the margin bwin is getting from the user on each product, and it can be aggregated over all the users to compare performance of the different products. It has been calculated as:
+        
+        [(Total stakes on P(i) - Total winnings on P(i)) 
+        / Total stakes on the product] * 100
+
+   \*_Note - Users with zero stakes but non-zero winnings on the product indicate they have used only the promotional money offered by bwin and won on that. In such cases margin is not possible to calculate and has been indicated as 0 in the datamart for that product_.  
+
+13. **Product playing frequency** -  This is a product metric and is similar to the overall playing frequency, except that it is calculated for each product. It indicates how much the user has actually played each product, and has been calculated as:
+
+        TotalActDays on P(i) / (LastActDate on P(i) - FirstActDate on P(i) + 1)
+        
+        
+**********
+  
+\newpage
+  
+##Summary Statistics
+
+```{r}
+UserCount <- length(Datamart$UserID)
+```
+Total number of users : **`r UserCount`**.
+  
+  
+  
+```{r}
+CountryCount <- Datamart[, .(UserCount = .N), by = Country]
+CountryCount <- merge(CountryCodes, CountryCount, by = "Country", all.y = TRUE)
+CountryCount <- CountryCount[order(-UserCount)]
+```
+
+
+All the users belong to one of the **`r length(CountryCount$Country)`** countries with a maximum of **`r CountryCount[[1,3]]`** users from **`r CountryCount[[1,2]]`**. The following plot shows the top 10 countries :
+
+```{r}
+ggplot(head(CountryCount, 10), aes(x = `Country Name`, y = UserCount)) + geom_bar(colour = "black", fill = "grey20", stat="identity") + scale_y_continuous(name= "User Count\n", breaks=seq(0, 25000, 2000)) + xlab("\nCountry")
+
+```
+  
+\newpage
+
+```{r}
+LanguageCount <- Datamart[, .(UserCount = .N), by = Language]
+LanguageCount <- merge(LanguageCodes, LanguageCount, by = "Language", all.y = TRUE)
+LanguageCount <- LanguageCount[order(-UserCount)]
+```
+
+All the users speak one of the **`r length(LanguageCount$Language)`** languages with a maximum of **`r LanguageCount[[1,3]]`** users speaking **`r LanguageCount[[1,2]]`**. The following plot shows the top 9 languages :
+
+```{r}
+ggplot(head(LanguageCount, 8), aes(x = `Language Description`, y = UserCount)) + geom_bar(colour = "black", fill = "grey20", stat="identity") + scale_y_continuous(name= "User Count\n", breaks=seq(0, 26000, 2000)) + xlab("\nPrimary Language")
+```
+
+\newpage
+
+```{r}
+SegmentCount <- Datamart[, .(UserCount = .N, "Median Playing Frequency" = median(`Overall Playing Frequency`)), by = `Ranked Segment`]
+setnames(SegmentCount, "Ranked Segment", "Rank")
+SegmentCount <- merge(UserSegmentMatrix, SegmentCount, by = "Rank", all.y = TRUE)
+SegmentCount <- SegmentCount[order(-UserCount)]
+```
+
+The users were grouped into 10 segments based on their age and gender and the segments were ranked according to their profitability. The segment with highest number of users is **`r SegmentCount[[1,2]]`** with **`r SegmentCount[[1,4]]`** users.
+
+The following plot compares the user count and median playing frequency of the top 5 profitable user segments :
+
+```{r}
+ggplot(head(SegmentCount, 5), aes(x = UserSegment, y = UserCount)) + geom_point(aes(size = `Profitability(euros)`, colour = `Median Playing Frequency`), stat = "identity") + scale_colour_gradient() + scale_y_continuous(name= "User Count\n", breaks=seq(0, 20000, 2000)) +  
+scale_x_discrete(name = "\nUser Segment", expand = c(0.09, 0))
+```
+
+Apparently the segment which played most actively are the males whose ages are not known.
+
+\newpage
+
+Statistics on the total days for which the users have been active :
+
+```{r}
+knitr::kable(Datamart[, .(Mean = round(mean(TotalActDays_Overall), 2), 
+                          Median = median(TotalActDays_Overall),
+                          Minimum = min(TotalActDays_Overall),
+                          Maximum = max(TotalActDays_Overall))])
+```
+
+
+Statistics on the gap (in days) between the registration day of the users and the day they first started playing :
+
+```{r}
+knitr::kable(Datamart[, .(Mean = round(mean(`First Activity Lag (days)`), 2), 
+                          Median = median(`First Activity Lag (days)`),
+                          Minimum = min(`First Activity Lag (days)`),
+                          Maximum = max(`First Activity Lag (days)`))])
+```
+
+
+Statistics on the total number of different products (out of 8) played by the users :
+
+```{r}
+knitr::kable(Datamart[, .(Mean = round(mean(`Total Products Played`), 2), 
+                          Median = median(`Total Products Played`),
+                          Minimum = min(`Total Products Played`),
+                          Maximum = max(`Total Products Played`))])
+
+```
+
+
+Statistics on the overall playing frequency of the users which represents how many days out of their range of active dates they have been actually played :
+
+```{r}
+knitr::kable(Datamart[, .(Mean = round(mean(`Overall Playing Frequency`), 2), 
+                          Median = median(`Overall Playing Frequency`),
+                          Minimum = min(`Overall Playing Frequency`),
+                          Maximum = max(`Overall Playing Frequency`))])
+```
+
+\newpage
+
+```{r}
+FavoriteProductCount <- Datamart[, .(UserCount = .N), by = `Favorite Product`]
+setnames(FavoriteProductCount, "Favorite Product", "ProductID")
+FavoriteProductCount <- merge(ProductCodes, FavoriteProductCount, by = "ProductID", all.y = TRUE)
+FavoriteProductCount <- FavoriteProductCount[order(-UserCount)]
+```
+
+The most favorite product of a user is the one having highest playing frequency. The following plot shows all the products and the count of users who played them most frequently :
+
+```{r}
+ggplot(FavoriteProductCount, aes(x = `Product Description`, y = UserCount)) + geom_bar(colour = "black", fill = "grey20", stat="identity") + scale_y_continuous(name= "User Count\n", breaks=seq(0, 26000, 2000)) + xlab("Product Name") + theme(axis.text.x = element_text(angle = 90))
+```
+
+The most favorite product among all the users is apparently **`r FavoriteProductCount[[1,2]]`** with **`r FavoriteProductCount[[1,3]]`** users playing it most frequently, followed by **`r FavoriteProductCount[[2,2]]`** with **`r FavoriteProductCount[[2,3]]`** users. This could be because Sports book products are low risk or do not need much skill to play.
+
+\newpage
+
+Statistics on the revenue from the users (in euros) which is the stake deposited by them :
+
+```{r}
+knitr::kable(Datamart[, .(Mean = round(mean(as.integer(substring(`Overall Stakes`, 2))), 2), 
+                          Median = median(as.integer(substring(`Overall Stakes`, 2))),
+                          Minimum = min(as.integer(substring(`Overall Stakes`, 2))),
+                          Maximum = max(as.integer(substring(`Overall Stakes`, 2))))])
+```
+
+
+Statistics on the cost of users (in euros) for the company which is the user winnings :
+
+```{r}
+knitr::kable(Datamart[, .(Mean = round(mean(as.integer(substring(`Overall Winnings`, 2))), 2), 
+                          Median = median(as.integer(substring(`Overall Winnings`, 2))),
+                          Minimum = min(as.integer(substring(`Overall Winnings`, 2))),
+                          Maximum = max(as.integer(substring(`Overall Winnings`, 2))))])
+```
+
+
+Statistics on the profit margin (in %) from the users for the company :
+
+```{r}
+knitr::kable(Datamart[, .(Mean = round(mean(as.numeric(substr(`Overall Profit Margin`, 1, nchar(`Overall Profit Margin`)-1)), na.rm = TRUE), 2), 
+                          Median = median(as.numeric(substr(`Overall Profit Margin`, 1, nchar(`Overall Profit Margin`)-1)), na.rm = TRUE),
+                          Minimum = min(as.numeric(substr(`Overall Profit Margin`, 1, nchar(`Overall Profit Margin`)-1)), na.rm = TRUE),
+                          Maximum = max(as.numeric(substr(`Overall Profit Margin`, 1, nchar(`Overall Profit Margin`)-1)), na.rm = TRUE))])
+```
+
+
+Statistics on the approximate descriptive lifetime Value (in euros) of the users :
+
+```{r}
+knitr::kable(Datamart[, .(Mean = round(mean(as.integer(substring(`Lifetime Value (Indicative)`, 2))), 2), 
+                          Median = median(as.integer(substring(`Lifetime Value (Indicative)`, 2))),
+                          Minimum = min(as.integer(substring(`Lifetime Value (Indicative)`, 2))),
+                          Maximum = max(as.integer(substring(`Lifetime Value (Indicative)`, 2))))])
+```
+
+\newpage
+
+The following plot shows the count of users with positive, negative and zero lifetime values :
+
+```{r fig.width=4}
+PositiveLTV <- Datamart[as.integer(substring(`Lifetime Value (Indicative)`, 2)) > 0, .("LTV Type" = "Positive", UserCount = .N)]
+NegativeLTV <- Datamart[as.integer(substring(`Lifetime Value (Indicative)`, 2)) < 0, .("LTV Type" = "Negative", UserCount = .N)]
+ZeroLTV <- Datamart[as.integer(substring(`Lifetime Value (Indicative)`, 2)) == 0, .("LTV Type" = "Zero", UserCount = .N)]
+LTVType <- rbind(PositiveLTV, NegativeLTV, ZeroLTV)
+
+ggplot(LTVType, aes(x = `LTV Type`, y = UserCount)) + geom_bar(colour = "black", fill = "grey20", stat="identity") + scale_y_continuous(name= "User Count\n", breaks=seq(0, 35000, 5000)) + xlab("\nLTV Type")
+```
+
+```{r}
+for(i in ProductCodes$ProductID) {
+  varname <- paste0("P", i, " B/D Ratio")
+  BDRatio <- Datamart[, .(Metric = "B/D Ratio", 
+                          Mean = round(mean(get(varname), na.rm = TRUE), 2), 
+                          Median = median(get(varname), na.rm = TRUE),
+                          Minimum = min(get(varname), na.rm = TRUE),
+                          Maximum = max(get(varname), na.rm = TRUE))]
+
+  
+  varname <- paste0("P", i, " Profit Margin")
+  ProfitMargin <- Datamart[, .(Metric = "Profit Margin (%)", 
+                               Mean = round(mean(as.numeric(substr(get(varname),1, nchar(get(varname))-1)),na.rm = TRUE), 2), 
+                               Median = median(as.numeric(substr(get(varname),1,nchar(get(varname))-1)),na.rm=TRUE),
+                               Minimum = min(as.numeric(substr(get(varname),1,nchar(get(varname))-1)),na.rm=TRUE),
+                               Maximum = max(as.numeric(substr(get(varname),1,nchar(get(varname))-1)),na.rm=TRUE))]
+  
+  varname <- paste0("P", i, " Playing Frequency")
+  PlayingFrequency <- Datamart[, .(Metric = "Playing Frequency", 
+                                   Mean = round(mean(get(varname), na.rm = TRUE), 2), 
+                                   Median = median(get(varname), na.rm = TRUE),
+                                   Minimum = min(get(varname), na.rm = TRUE),
+                                   Maximum = max(get(varname), na.rm = TRUE))]
+  
+  assign(paste0("P", i), rbind(BDRatio, ProfitMargin, PlayingFrequency))  
+}
+```
+
+\newpage
+
+Statistics on **Product 1 (`r ProductCodes[[1,2]]`)** :
+
+```{r}
+knitr::kable(P1)
+```
+
+
+Statistics on **Product 2 (`r ProductCodes[[2,2]]`)** :
+
+```{r}
+knitr::kable(P2)
+```
+
+
+Statistics on **Product 3 (`r ProductCodes[[3,2]]`)** :
+
+```{r}
+knitr::kable(P3)
+```
+
+
+Statistics on **Product 4 (`r ProductCodes[[4,2]]`)** :
+
+```{r}
+knitr::kable(P4)
+```
+
+
+Statistics on **Product 5 (`r ProductCodes[[5,2]]`)** :
+
+```{r}
+knitr::kable(P5)
+```
+
+
+Statistics on **Product 6 (`r ProductCodes[[6,2]]`)** :
+
+```{r}
+knitr::kable(P6)
+```
+
+
+Statistics on **Product 7 (`r ProductCodes[[7,2]]`)** :
+
+```{r}
+knitr::kable(P7)
+```
+
+
+Statistics on **Product 8 (`r ProductCodes[[8,2]]`)** :
+
+```{r}
+knitr::kable(P8)
+```
+
+
+```{r}
+ProdPerformance <- data.table(ProductID = c(1, 2, 3, 4, 5, 6, 7, 8),
+                      "Median B/D Ratio" = c(P1[[1,3]], P2[[1,3]], P3[[1,3]], P4[[1,3]], P5[[1,3]], P6[[1,3]], P7[[1,3]], P8[[1,3]]),
+                      "Median Profit Margin" = c(P1[[2,3]], P2[[2,3]], P3[[2,3]], P4[[2,3]], P5[[2,3]], P6[[2,3]], P7[[2,3]], P8[[2,3]]),
+                      "Median Playing Frequency" = c(P1[[3,3]], P2[[3,3]], P3[[3,3]], P4[[3,3]], P5[[3,3]], P6[[3,3]], P7[[3,3]], P8[[3,3]]), check.names = FALSE)
+```
+
+\newpage
+
+The following plot compares the performance of the 8 products in terms of median values of the B/D Ratio observed across the users :
+
+```{r}
+ggplot(ProdPerformance, aes(x = ProductID, y = `Median B/D Ratio`)) + geom_point(size = 3) + scale_y_continuous(name = "Median B/D Ratio\n", breaks=seq(0, 1, 0.1)) + scale_x_continuous(name = "\nProduct ID", breaks=seq(1, 8, 1))
+```
+
+Products 5,6,7 & 8 appear to have shown higher B/D rations than rest of the products, which implies that users take more time to lose on these games. Bwin might need to check these with the standard values to see if the games are functioning properly.
+
+\newpage
+
+The following plot compares the performance of the 8 products in terms of median values of the playing frequency exhibited by the users :
+
+```{r}
+ggplot(ProdPerformance, aes(x = ProductID, y = `Median Playing Frequency`)) + geom_point(size = 3) + scale_y_continuous(name= "Median Playing Frequency\n", breaks=seq(0, 1, 0.1)) + scale_x_continuous(name = "\nProduct ID", breaks=seq(1, 8, 1))
+```
+
+Games (6 & 7) appear to have the highest median playing frequency, followed by Casino (4 & 8) and sports book (1 & 2) neing the lowest. Since the number of users who have played these products is significantly lower than other products, this implies that most of the users who did use these products, played them more actively than they played others. 
+
+\newpage
+
+The following plot compares the performance of the 8 products in terms of median values of the profit margin obtained on them :
+
+```{r}
+ggplot(ProdPerformance, aes(x = ProductID, y = `Median Profit Margin`)) + geom_point(size = 3) + scale_y_continuous(name= "Median Profit Margin (%)\n", breaks=seq(5, 55, 5)) + scale_x_continuous(name = "\nProduct ID", breaks=seq(1, 8, 1))
+```
+
+Poker (3) appears to be the highest margin product, followed by Games (6 & 7), Sports book (1 & 2), Supertoto (5) and Casino (4 & 8). 
